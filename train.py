@@ -12,8 +12,13 @@ from train_sim import make_pairwise_encoder
 
 from torch.utils import data
 import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+from torch.distributions.normal import Normal
+from torch.utils.data import random_split
 
 import modules
+
+from sklearn.manifold import TSNE
 
 
 parser = argparse.ArgumentParser()
@@ -61,6 +66,8 @@ parser.add_argument('--nl-type', default=0, type=int)
 
 parser.add_argument('--decoder', action='store_true', default=False,
                     help='Train model using decoder and pixel-based loss.')
+parser.add_argument('--gess', action='store_true', default=False,
+                    help='Train model using gess objective instead of pixel-based loss. Must be used with decoder.')
 
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='Disable CUDA training.')
@@ -71,6 +78,9 @@ parser.add_argument('--log-interval', type=int, default=20,
                          'training status.')
 parser.add_argument('--dataset', type=str,
                     default='data/shapes_train.h5',
+                    help='Path to replay buffer.')
+parser.add_argument('--eval_dataset', type=str,
+                    default='data/shapes_val.h5',
                     help='Path to replay buffer.')
 parser.add_argument('--name', type=str, default='none',
                     help='Experiment name.')
@@ -117,16 +127,32 @@ if args.bisim:
     if args.custom_neg:
         dataset = utils.StateTransitionsDatasetStateIdsNegs(
             hdf5_file=args.dataset)
+        if args.eval_dataset is not None:
+            eval_dataset = utils.StateTransitionsDatasetStateIdsNegs(
+                hdf5_file=args.eval_dataset)
     else:
         dataset = utils.StateTransitionsDatasetStateIds(
             hdf5_file=args.dataset)
+        if args.eval_dataset is not None:
+            eval_dataset = utils.StateTransitionsDatasetStateIds(
+                hdf5_file=args.eval_dataset)
 else:
     assert not args.custom_neg
     dataset = utils.StateTransitionsDataset(
         hdf5_file=args.dataset)
+    if args.eval_dataset is not None:
+        eval_dataset = utils.StateTransitionsDataset(
+            hdf5_file=args.eval_dataset)
 
 train_loader = data.DataLoader(
     dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+
+if args.eval_dataset is not None:
+    subset = 10
+    total = len(eval_dataset)
+    eval_subset = random_split(eval_dataset, [subset, total-subset])[0]
+    eval_loader = data.DataLoader(
+        eval_subset, batch_size=args.batch_size)
 
 # Get data sample
 obs = train_loader.__iter__().next()[0]
@@ -202,17 +228,86 @@ if args.decoder:
         lr=args.learning_rate)
 
 
+class Scheduler:
+    def get_value(self, step):
+        raise NotImplementedError
+
+class ExpSinScheduler(Scheduler):
+    def __init__(self, coefficient, period, offset, base):
+        self.coefficient = coefficient
+        self.period = period
+        self.offset = offset
+        self.base = base
+
+    def get_value(self, step):
+        return self.base ** (self.offset + self.coefficient * np.sin(2 * np.pi * step / self.period))
+
+class StepScheduler:
+    def __init__(self, values, steps):
+        assert len(values) == len(steps) + 1
+        self.values = values
+        self.steps = steps
+
+    def get_value(self, step):
+        for i in range(len(self.steps)):
+            if step < sum(self.steps[:i+1]):
+                return self.values[i]
+        return self.values[-1]
+
 # Train model.
 print('Starting model training...')
 step = 0
 best_loss = 1e9
 losses = []
+logger = SummaryWriter()
+log_examples = [dataset[i] for i in range(30)]
+if args.eval_dataset is not None:
+    eval_log_examples = [eval_dataset[i] for i in range(10)]
+# sigma = ExpSinScheduler(.001, 2000, 0, 10)
+# sigma = ExpSinScheduler(0, 2000, 1, args.sigma)
+# sigma = StepScheduler([1, .9, .8, .7, .6, .5], [5000, 5000, 5000, 5000, 5000])
+sigma = StepScheduler([args.sigma], [])
+freeze_encoder = StepScheduler([False], [])
+freeze_decoder = StepScheduler([False], [])
+freeze_predictor = StepScheduler([False], [])
+
+def plot_states(states, next_states, next_pred_states):
+    figure = plt.figure(figsize=(10, 10))
+    i, o, c = states.shape
+    allstates = np.concatenate([states.reshape(i*o, 1, c),
+                                next_states.reshape(i*o, 1, c),
+                                next_pred_states.reshape(i*o, 1, c)], 1)
+    allstates2 = TSNE(n_components=2).fit_transform(allstates.reshape(i*o*3, c)).reshape(i*o, 3, 2) \
+                 if c > 2 else allstates
+    plt.plot(allstates2[:, 0, 0], allstates2[:, 0, 1], '.')
+    plt.plot(allstates2[:, 1, 0], allstates2[:, 1, 1], 'g.')
+    plt.plot(allstates2[:, 2, 0], allstates2[:, 2, 1], 'r.')
+    for inst in range(allstates2.shape[0]):
+        plt.arrow(allstates2[inst, 0, 0], allstates2[inst, 0, 1],
+                  allstates2[inst, 1, 0] - allstates2[inst, 0, 0],
+                  allstates2[inst, 1, 1] - allstates2[inst, 0, 1], color='g')
+        plt.arrow(allstates2[inst, 0, 0], allstates2[inst, 0, 1],
+                  allstates2[inst, 2, 0] - allstates2[inst, 0, 0],
+                  allstates2[inst, 2, 1] - allstates2[inst, 0, 1], color='r')
+    return figure
 
 for epoch in range(1, args.epochs + 1):
     model.train()
     train_loss = 0
 
     for batch_idx, data_batch in enumerate(train_loader):
+        if step == 0 or freeze_encoder.get_value(step) != freeze_encoder.get_value(step-1):
+            for p in model.obj_encoder.parameters():
+                p.requires_grad_(not freeze_encoder.get_value(step))
+            for p in model.obj_extractor.parameters():
+                p.requires_grad_(not freeze_encoder.get_value(step))
+        if step == 0 or freeze_decoder.get_value(step) != freeze_decoder.get_value(step-1):
+            for p in decoder.parameters():
+                p.requires_grad_(not freeze_decoder.get_value(step))
+        if step == 0 or freeze_predictor.get_value(step) != freeze_predictor.get_value(step-1):
+            for p in model.transition_model.parameters():
+                p.requires_grad_(not freeze_predictor.get_value(step))
+
         data_batch = [tensor.to(device) for tensor in data_batch]
         optimizer.zero_grad()
 
@@ -224,15 +319,43 @@ for epoch in range(1, args.epochs + 1):
             state = model.obj_encoder(objs)
 
             rec = torch.sigmoid(decoder(state))
-            loss = F.binary_cross_entropy(
-                rec, obs, reduction='sum') / obs.size(0)
 
             next_state_pred = state + model.transition_model(state, action)
-            next_rec = torch.sigmoid(decoder(next_state_pred))
-            next_loss = F.binary_cross_entropy(
-                next_rec, next_obs,
-                reduction='sum') / obs.size(0)
-            loss += next_loss
+
+            if args.gess:
+                model.sigma = sigma.get_value(step)
+                next_objs = model.obj_extractor(next_obs)
+                next_state = model.obj_encoder(next_objs)
+                next_state_pert = Normal(next_state, torch.ones_like(next_state)).rsample()
+                next_rec = torch.sigmoid(decoder(next_state_pert))
+                rec_loss = F.binary_cross_entropy(
+                    rec, obs, reduction='sum') / obs.size(0)
+                next_rec_loss = F.binary_cross_entropy(
+                    next_rec, next_obs,
+                    reduction='sum') / obs.size(0)
+                loss = (rec_loss + next_rec_loss) / 2
+                # next_rec_pred = torch.sigmoid(decoder(next_state_pred.detach()))
+                # next_rec_pred_loss = F.binary_cross_entropy(
+                #     next_rec_pred, next_obs,
+                #     reduction='sum') / obs.size(0)
+                # loss = (rec_loss + next_rec_loss + next_rec_pred_loss) / 3
+                logger.add_scalar('reco_loss', loss.item(), global_step=step)
+                next_state_loss = model.energy(state, action, next_state).sum() / obs.size(0)
+                logger.add_scalar('latent_loss', next_state_loss.item(), global_step=step)
+                loss += next_state_loss
+            else:
+                next_rec_pred = torch.sigmoid(decoder(next_state_pred))
+                loss = F.binary_cross_entropy(
+                    rec, obs, reduction='sum') / obs.size(0)
+                next_loss = F.binary_cross_entropy(
+                    next_rec_pred, next_obs,
+                    reduction='sum') / obs.size(0)
+                loss += next_loss / 2
+                next_objs = model.obj_extractor(next_obs)
+                next_state = model.obj_encoder(next_objs)
+                next_state_loss = model.energy(state, action, next_state).sum() / obs.size(0)
+                logger.add_scalar('reco_loss', loss.item(), global_step=step)
+                logger.add_scalar('latent_loss', next_state_loss.item(), global_step=step)
         else:
             loss = model.contrastive_loss(*data_batch)
 
@@ -244,6 +367,80 @@ for epoch in range(1, args.epochs + 1):
 
         if args.decoder:
             optimizer_dec.step()
+
+        model.eval()
+        with torch.no_grad():
+            # logging
+            logger.add_scalar('loss', loss.item(), global_step=step)
+            if step % 100 == 0:
+                if args.decoder:
+                    for i,example in enumerate(log_examples):
+                        obs, action, next_obs = example
+                        obs = torch.tensor(obs, device=device).unsqueeze(0)
+                        action = torch.tensor(action, device=device).unsqueeze(0)
+                        next_obs = torch.tensor(next_obs, device=device).unsqueeze(0)
+                        objs = model.obj_extractor(obs)
+                        state = model.obj_encoder(objs)
+                        rec = torch.sigmoid(decoder(state))
+                        next_objs = model.obj_extractor(next_obs)
+                        next_state = model.obj_encoder(next_objs)
+                        next_rec = torch.sigmoid(decoder(next_state))
+                        next_state_pred = state + model.transition_model(state, action)
+                        next_rec_pred = torch.sigmoid(decoder(next_state_pred))
+                        x = torch.cat([obs, rec, next_obs, next_rec, next_rec_pred], 3).squeeze(0)
+                        # import pdb; pdb.set_trace()
+                        x = x.permute(1, 2, 0).detach().cpu().numpy()
+                        figure = plt.figure(figsize=(50, 10))
+                        plt.subplot(1, 1, 1, title='prefix')
+                        plt.xticks([])
+                        plt.yticks([])
+                        plt.grid(False)
+                        plt.imshow(x)
+                        logger.add_figure('train/example'+str(i), figure, global_step=step)
+                    if args.eval_dataset is not None:
+                        for i,example in enumerate(eval_log_examples):
+                            obs, action, next_obs = example
+                            obs = torch.tensor(obs, device=device).unsqueeze(0)
+                            action = torch.tensor(action, device=device).unsqueeze(0)
+                            next_obs = torch.tensor(next_obs, device=device).unsqueeze(0)
+                            objs = model.obj_extractor(obs)
+                            state = model.obj_encoder(objs)
+                            rec = torch.sigmoid(decoder(state))
+                            next_objs = model.obj_extractor(next_obs)
+                            next_state = model.obj_encoder(next_objs)
+                            next_rec = torch.sigmoid(decoder(next_state))
+                            next_state_pred = state + model.transition_model(state, action)
+                            next_rec_pred = torch.sigmoid(decoder(next_state_pred))
+                            x = torch.cat([obs, rec, next_obs, next_rec, next_rec_pred], 3).squeeze(0)
+                            # import pdb; pdb.set_trace()
+                            x = x.permute(1, 2, 0).detach().cpu().numpy()
+                            figure = plt.figure(figsize=(50, 10))
+                            plt.subplot(1, 1, 1, title='prefix')
+                            plt.xticks([])
+                            plt.yticks([])
+                            plt.grid(False)
+                            plt.imshow(x)
+                            logger.add_figure('eval/example'+str(i), figure, global_step=step)
+                if args.eval_dataset is not None:
+                    states = []
+                    next_states = []
+                    next_pred_states = []
+                    for batch_idx, data_batch in enumerate(eval_loader):
+                        data_batch = [tensor.to(device) for tensor in data_batch]
+                        obs, action, next_obs = data_batch
+                        objs = model.obj_extractor(obs)
+                        state = model.obj_encoder(objs)
+                        next_objs = model.obj_extractor(next_obs)
+                        next_state = model.obj_encoder(next_objs)
+                        next_state_pred = state + model.transition_model(state, action)
+                        states.append(state)
+                        next_states.append(next_state)
+                        next_pred_states.append(next_state_pred)
+                    figure = plot_states(torch.cat(states, 0).detach().cpu().numpy(),
+                                         torch.cat(next_states, 0).detach().cpu().numpy(),
+                                         torch.cat(next_pred_states, 0).detach().cpu().numpy())
+                    logger.add_figure('latent', figure, global_step=step)
+        model.train()
 
         if batch_idx % args.log_interval == 0:
             print(

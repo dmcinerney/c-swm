@@ -15,6 +15,7 @@ from PIL import Image
 
 
 import skimage
+# import skimage.draw
 
 
 def square(r0, c0, width, im_size):

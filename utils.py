@@ -79,14 +79,19 @@ def get_colors(cmap='Set1', num_colors=9):
 
 
 def pairwise_distance_matrix(x, y):
-    num_samples = x.size(0)
-    dim = x.size(1)
+    # num_samples = x.size(0)
+    # dim = x.size(1)
+    #
+    # x = x.unsqueeze(1).expand(num_samples, num_samples, dim)
+    # y = y.unsqueeze(0).expand(num_samples, num_samples, dim)
+    #
+    # return torch.pow(x - y, 2).sum(2)
 
-    x = x.unsqueeze(1).expand(num_samples, num_samples, dim)
-    y = y.unsqueeze(0).expand(num_samples, num_samples, dim)
-
-    return torch.pow(x - y, 2).sum(2)
-
+    # taken from https://stackoverflow.com/questions/58906142/efficient-way-to-compute-pairwise-euclidean-distances-between-all-vectors-in-a-t
+    xx = x.mm(x.transpose(0, 1)).diagonal().unsqueeze(1)
+    xy = x.mm(y.transpose(0, 1))
+    yy = y.mm(y.transpose(0, 1)).diagonal().unsqueeze(0)
+    return xx - 2 * xy + yy
 
 def get_act_fn(act_fn):
     if act_fn == 'relu':

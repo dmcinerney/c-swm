@@ -49,7 +49,7 @@ device = torch.device('cuda' if args.cuda else 'cpu')
 dataset = utils.PathDataset(
     hdf5_file=args.dataset, path_length=args_eval.num_steps)
 eval_loader = data.DataLoader(
-    dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    dataset, batch_size=args.batch_size, shuffle=False)
 
 # Get data sample
 obs = eval_loader.__iter__().next()[0]
