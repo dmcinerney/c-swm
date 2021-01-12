@@ -301,9 +301,10 @@ for epoch in range(1, args.epochs + 1):
                 p.requires_grad_(not freeze_encoder.get_value(step))
             for p in model.obj_extractor.parameters():
                 p.requires_grad_(not freeze_encoder.get_value(step))
-        if step == 0 or freeze_decoder.get_value(step) != freeze_decoder.get_value(step-1):
-            for p in decoder.parameters():
-                p.requires_grad_(not freeze_decoder.get_value(step))
+        if args.decoder:
+            if step == 0 or freeze_decoder.get_value(step) != freeze_decoder.get_value(step-1):
+                for p in decoder.parameters():
+                    p.requires_grad_(not freeze_decoder.get_value(step))
         if step == 0 or freeze_predictor.get_value(step) != freeze_predictor.get_value(step-1):
             for p in model.transition_model.parameters():
                 p.requires_grad_(not freeze_predictor.get_value(step))
@@ -388,14 +389,19 @@ for epoch in range(1, args.epochs + 1):
                         next_state_pred = state + model.transition_model(state, action)
                         next_rec_pred = torch.sigmoid(decoder(next_state_pred))
                         x = torch.cat([obs, rec, next_obs, next_rec, next_rec_pred], 3).squeeze(0)
-                        # import pdb; pdb.set_trace()
-                        x = x.permute(1, 2, 0).detach().cpu().numpy()
-                        figure = plt.figure(figsize=(50, 10))
+                        # masks = torch.cat([objs[0, i] for i in range(objs.shape[1])], 1)
+                        # masks = torch.nn.functional.upsample(masks.unsqueeze(0).unsqueeze(0),
+                        #                              (x.shape[1], x.shape[1]*objs.shape[1])).squeeze(0).expand(
+                        #     x.shape[0], x.shape[1], x.shape[1]*objs.shape[1])
+                        # x = torch.nn.functional.pad(x, [0, max(0, masks.shape[2] - x.shape[2])])
+                        # masks = torch.nn.functional.pad(masks, [0, max(0, x.shape[2] - masks.shape[2])])
+                        # x = torch.cat([x, masks], 1)
+                        figure = plt.figure(figsize=(5 * x.shape[2] // x.shape[1], 5))
                         plt.subplot(1, 1, 1, title='prefix')
                         plt.xticks([])
                         plt.yticks([])
                         plt.grid(False)
-                        plt.imshow(x)
+                        plt.imshow(utils.css_to_ssc(utils.to_np(x[:3])))
                         logger.add_figure('train/example'+str(i), figure, global_step=step)
                     if args.eval_dataset is not None:
                         for i,example in enumerate(eval_log_examples):
@@ -412,16 +418,56 @@ for epoch in range(1, args.epochs + 1):
                             next_state_pred = state + model.transition_model(state, action)
                             next_rec_pred = torch.sigmoid(decoder(next_state_pred))
                             x = torch.cat([obs, rec, next_obs, next_rec, next_rec_pred], 3).squeeze(0)
-                            # import pdb; pdb.set_trace()
-                            x = x.permute(1, 2, 0).detach().cpu().numpy()
-                            figure = plt.figure(figsize=(50, 10))
+                            # masks = torch.cat([objs[0, i] for i in range(objs.shape[1])], 1)
+                            # masks = torch.nn.functional.upsample(masks.unsqueeze(0).unsqueeze(0),
+                            #                                      (x.shape[1], x.shape[1] * objs.shape[1])).squeeze(
+                            #     0).expand(
+                            #     x.shape[0], x.shape[1], x.shape[1] * objs.shape[1])
+                            # x = torch.nn.functional.pad(x, [0, max(0, masks.shape[2] - x.shape[2])])
+                            # masks = torch.nn.functional.pad(masks, [0, max(0, x.shape[2] - masks.shape[2])])
+                            # x = torch.cat([x, masks], 1)
+                            figure = plt.figure(figsize=(5 * x.shape[2] // x.shape[1], 5))
                             plt.subplot(1, 1, 1, title='prefix')
                             plt.xticks([])
                             plt.yticks([])
                             plt.grid(False)
-                            plt.imshow(x)
+                            plt.imshow(utils.css_to_ssc(utils.to_np(x[:3])))
                             logger.add_figure('eval/example'+str(i), figure, global_step=step)
+                for i, example in enumerate(log_examples):
+                    obs, action, next_obs = example
+                    obs = torch.tensor(obs, device=device).unsqueeze(0)
+                    objs = model.obj_extractor(obs)
+                    obs = obs.squeeze(0)
+                    masks = torch.cat([objs[0, i] for i in range(objs.shape[1])], 1)
+                    masks = torch.nn.functional.interpolate(
+                        masks.unsqueeze(0).unsqueeze(0), (obs.shape[1], obs.shape[1] * objs.shape[1])).squeeze(
+                        0).expand(obs.shape[0], obs.shape[1], obs.shape[1] * objs.shape[1])
+                    x = torch.cat([obs, masks], 2)
+                    figure = plt.figure(figsize=(5 * (objs.shape[1] + 1), 5))
+                    plt.subplot(1, 1, 1, title='prefix')
+                    plt.xticks([])
+                    plt.yticks([])
+                    plt.grid(False)
+                    plt.imshow(utils.css_to_ssc(utils.to_np(x[:3])))
+                    logger.add_figure('train/example' + str(i) + '_masks', figure, global_step=step)
                 if args.eval_dataset is not None:
+                    for i, example in enumerate(eval_log_examples):
+                        obs, action, next_obs = example
+                        obs = torch.tensor(obs, device=device).unsqueeze(0)
+                        objs = model.obj_extractor(obs)
+                        obs = obs.squeeze(0)
+                        masks = torch.cat([objs[0, i] for i in range(objs.shape[1])], 1)
+                        masks = torch.nn.functional.interpolate(
+                            masks.unsqueeze(0).unsqueeze(0), (obs.shape[1], obs.shape[1] * objs.shape[1])).squeeze(
+                            0).expand(obs.shape[0], obs.shape[1], obs.shape[1] * objs.shape[1])
+                        x = torch.cat([obs, masks], 2)
+                        figure = plt.figure(figsize=(5 * (objs.shape[1] + 1), 5))
+                        plt.subplot(1, 1, 1, title='prefix')
+                        plt.xticks([])
+                        plt.yticks([])
+                        plt.grid(False)
+                        plt.imshow(utils.css_to_ssc(utils.to_np(x[:3])))
+                        logger.add_figure('eval/example' + str(i) + '_masks', figure, global_step=step)
                     states = []
                     next_states = []
                     next_pred_states = []

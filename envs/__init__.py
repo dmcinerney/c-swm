@@ -86,6 +86,20 @@ register(
 )
 
 register(
+    'ShapesImmovableBgDeterministicTrain-v0',
+    entry_point='envs.block_pushing:BlockPushing',
+    max_episode_steps=100,
+    kwargs={'render_type': 'shapes', 'immovable': True, 'background': BlockPushing.BACKGROUND_DETERMINISTIC},
+)
+
+register(
+    'ShapesImmovableBgDeterministicEval-v0',
+    entry_point='envs.block_pushing:BlockPushing',
+    max_episode_steps=10,
+    kwargs={'render_type': 'shapes', 'immovable': True, 'background': BlockPushing.BACKGROUND_DETERMINISTIC},
+)
+
+register(
     'ShapesOppositeTrain-v0',
     entry_point='envs.block_pushing:BlockPushing',
     max_episode_steps=100,

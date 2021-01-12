@@ -1,6 +1,6 @@
 command to remember:
 
-python train.py --dataset /home/jered/Documents/data/c-swm/shapes_train.h5 --encoder small --name shapes_gess --decoder --embedding-dim 32 --batch-size 512 --gess --epochs 100 --eval_dataset /home/jered/Documents/data/c-swm/shapes_eval.h5 --sigma .5
+python train.py --dataset /home/jered/Documents/data/c-swm/shapes_train.h5 --encoder small --name shapes_gess --decoder --embedding-dim 32 --batch-size 512 --gess --epochs 200 --eval_dataset /home/jered/Documents/data/c-swm/shapes_eval.h5 --sigma .5 --learning-rate 1e-3
 
 Acheived 99 percent ranking accuracy after 10 steps! Trick: make gaussian noise before decoder and tune sigma correctly.  Latent dimension doesn't look great, but performance is great and I suspect experiments will show that negative sampling fails in other cases where this succeeds.
 
