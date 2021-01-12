@@ -214,6 +214,34 @@ class StateTransitionsDatasetStateIdsNegs(StateTransitionsDataset):
         return obs, action, next_obs, state_ids, next_state_ids, neg_obs, neg_state_id
 
 
+class StateTransitionsDatasetNegs(StateTransitionsDataset):
+
+    def __init__(self, hdf5_file):
+
+        super(StateTransitionsDatasetNegs, self).__init__(hdf5_file)
+
+    def __getitem__(self, idx):
+        ep, step = self.idx2episode[idx]
+
+        obs = to_float(self.experience_buffer[ep]['obs'][step])
+        action = self.experience_buffer[ep]['action'][step]
+        next_obs = to_float(self.experience_buffer[ep]['next_obs'][step])
+
+        in_out = np.random.choice([True, False])
+
+        if in_out:
+            # choose from inside the episode
+            random_step = np.random.randint(len(self.experience_buffer[ep]['obs']))
+            neg_obs = to_float(self.experience_buffer[ep]['obs'][random_step])
+        else:
+            # choose from outside the episode
+            random_ep = np.random.randint(len(self.experience_buffer))
+            neg_obs = to_float(self.experience_buffer[random_ep]['obs'][step])
+
+        # state ids are used in the bisimulation inspired losses, here I pass Nones instead
+        return obs, action, next_obs, None, None, neg_obs, None
+
+
 class StateTransitionsDatasetTwins(StateTransitionsDataset):
 
     MODE_RANDOM = 0

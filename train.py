@@ -137,12 +137,18 @@ if args.bisim:
             eval_dataset = utils.StateTransitionsDatasetStateIds(
                 hdf5_file=args.eval_dataset)
 else:
-    assert not args.custom_neg
-    dataset = utils.StateTransitionsDataset(
-        hdf5_file=args.dataset)
-    if args.eval_dataset is not None:
-        eval_dataset = utils.StateTransitionsDataset(
-            hdf5_file=args.eval_dataset)
+    if args.custom_neg:
+        dataset = utils.StateTransitionsDatasetNegs(
+            hdf5_file=args.dataset)
+        if args.eval_dataset is not None:
+            eval_dataset = utils.StateTransitionsDatasetNegs(
+                hdf5_file=args.eval_dataset)
+    else:
+        dataset = utils.StateTransitionsDataset(
+            hdf5_file=args.dataset)
+        if args.eval_dataset is not None:
+            eval_dataset = utils.StateTransitionsDataset(
+                hdf5_file=args.eval_dataset)
 
 train_loader = data.DataLoader(
     dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
